@@ -1,15 +1,12 @@
 import "dotenv/config";
-import { OpenAI } from "openai";
+import { GoogleGenAI } from "@google/genai";
 import { exec } from "child_process";
 import { createInterface } from "readline";
 import fs from "fs";
 import path from "path";
 
-// ── Gemini via OpenAI-compatible endpoint ──────────────────────────────
-const client = new OpenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
-});
+// ── Native @google/genai client ────────────────────────────────────────
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const MODEL = "gemini-3-flash-preview";
 
@@ -51,8 +48,7 @@ function writeFile(filePath = "", content = "") {
  */
 function readFile(filePath = "") {
   try {
-    const content = fs.readFileSync(filePath, "utf-8");
-    return content;
+    return fs.readFileSync(filePath, "utf-8");
   } catch (err) {
     return `Error reading file: ${err.message}`;
   }
@@ -78,29 +74,25 @@ const tools = {
   executeCommand: {
     fn: executeCommand,
     parse: (args) => [args.cmd || args.command || args],
-    description: "Execute a shell command on the user's machine.",
   },
   writeFile: {
     fn: writeFile,
     parse: (args) => [args.filePath || args.path, args.content],
-    description: "Write content to a file. Creates parent directories if needed.",
   },
   readFile: {
     fn: readFile,
     parse: (args) => [args.filePath || args.path],
-    description: "Read the contents of a file.",
   },
   listFiles: {
     fn: listFiles,
     parse: (args) => [args.dirPath || args.path || "."],
-    description: "List files and directories at the given path.",
   },
 };
 
 // ── System prompt ──────────────────────────────────────────────────────
+// Goes into config.systemInstruction (NOT in contents) per models.md
 
-const SYSTEM_PROMPT = `
-You are DenominatorCLI — an AI agent running in a terminal that clones websites by reasoning step-by-step.
+const SYSTEM_PROMPT = `You are DenominatorCLI — an AI agent running in a terminal that clones websites by reasoning step-by-step.
 You follow a strict loop: START → THINK → TOOL → OBSERVE → OUTPUT.
 
 Context:
@@ -114,46 +106,37 @@ Available tools:
 4. listFiles(dirPath: string) — List files in a directory.
 
 Rules:
-1. Always respond with exactly ONE JSON object per step — no extra text.
+1. Always respond with exactly ONE JSON object per response — no extra text, no markdown fences.
 2. Loop: START → THINK (multiple) → TOOL → OBSERVE → THINK → ... → OUTPUT.
-3. After every TOOL step, stop immediately and wait for the OBSERVE result.
-4. NEVER skip THINK steps — reason before every action.
+3. After every TOOL step, stop and wait — the OBSERVE result will arrive in the next message.
+4. Never skip THINK steps — reason before every action.
 5. OUTPUT is your final message to the user.
 
-Website Cloning Strategy (follow this pipeline when asked to clone a site):
-Step 1 — FETCH: Use executeCommand with curl to get the real website HTML.
-         Example: executeCommand({ cmd: "curl -sL --max-time 15 https://www.scaler.com" })
-Step 2 — ANALYZE: Read the fetched HTML to identify:
-         - Navigation links and logo placement (header structure)
-         - Hero headline, subheadline, CTA button text and colors
-         - Footer columns, links, and copyright text
-         - Primary brand colors, fonts, and overall design language
-Step 3 — GENERATE: Write a single production-quality HTML file to output/index.html that:
-         - Replicates the visual structure: header with nav, hero section, footer
-         - Uses inline CSS with the real brand colors and fonts detected
-         - Is fully self-contained (no external asset dependencies that would break)
-         - Looks visually close to the real site when opened in a browser
-Step 4 — VERIFY: Use listFiles and readFile to confirm the output file was written correctly.
-Step 5 — OPEN: Use executeCommand to open the file in the browser (start output/index.html on Windows).
+Website Cloning Strategy (follow this pipeline for site clone tasks):
+Step 1 — FETCH: Use executeCommand to curl the real site HTML.
+         Example: { "cmd": "curl -sL --max-time 15 https://www.scaler.com" }
+Step 2 — ANALYZE: From the HTML identify nav links, hero headline/subheadline/CTAs, brand colors, footer columns.
+Step 3 — GENERATE: Write a single self-contained HTML file to output/index.html.
+         Must include: sticky header with real nav items, hero section with real headline and CTAs, scrolling program marquee, footer with real columns and links.
+         Use inline CSS only. Use real brand colors from the HTML. No external assets that break offline.
+Step 4 — VERIFY: Use listFiles to confirm output/index.html exists.
+Step 5 — OPEN: Use executeCommand to open the file in browser (start output/index.html on Windows).
 
-Output format (one JSON object per message):
-{ "step": "START" | "THINK" | "TOOL" | "OUTPUT", "content": "string", "tool_name": "string (only for TOOL)", "tool_args": { ... } (only for TOOL) }
+Output format — one JSON object per message, no other text:
+{ "step": "START" | "THINK" | "TOOL" | "OUTPUT", "content": "string", "tool_name": "string (only for TOOL)", "tool_args": { ... } }
 
 Example:
 User: Clone the Scaler Academy website
-{ "step": "START", "content": "User wants me to clone the Scaler Academy website. I will fetch the real site, analyze its structure, then generate an accurate HTML clone." }
-{ "step": "THINK", "content": "First I need to fetch the real Scaler website HTML so I can see the actual nav items, hero text, colors, and footer structure." }
+{ "step": "START", "content": "User wants a Scaler clone. I will fetch the real site, analyze its structure, then generate an accurate HTML clone." }
+{ "step": "THINK", "content": "First I need the real Scaler HTML to extract nav items, hero text, brand colors, and footer structure." }
 { "step": "TOOL", "tool_name": "executeCommand", "tool_args": { "cmd": "curl -sL --max-time 15 https://www.scaler.com" } }
-// OBSERVE returns raw HTML
-{ "step": "THINK", "content": "I can see the nav has: Courses, Topics, Events, Blog. The hero says 'Become a software developer...'. Brand color is dark navy #1a1a2e. CTA is orange. Footer has columns for Courses, Topics, Company. Now I will write the clone." }
+// (system sends OBSERVE with result)
+{ "step": "THINK", "content": "I can see nav: PROGRAM, MASTERCLASS, AI LABS, ALUMNI. Hero: 'Become the Professional Built for the Next Decade in AI.' Brand color: #011845 navy, #004CE5 blue. Footer has Explore Scaler, Resources, Company, Socials. Now writing the clone." }
 { "step": "TOOL", "tool_name": "writeFile", "tool_args": { "filePath": "output/index.html", "content": "<!DOCTYPE html>..." } }
-// OBSERVE returns success
-{ "step": "THINK", "content": "File written. Let me verify it exists and then open it." }
+// (system sends OBSERVE with success)
 { "step": "TOOL", "tool_name": "listFiles", "tool_args": { "dirPath": "output" } }
-// OBSERVE returns [FILE] index.html
-{ "step": "OUTPUT", "content": "Scaler Academy clone created at output/index.html. Open it in your browser to view the result." }
-`;
-
+// (system sends OBSERVE with [FILE] index.html)
+{ "step": "OUTPUT", "content": "Scaler clone created at output/index.html. Open it in your browser." }`;
 
 // ── Pretty-print helpers ───────────────────────────────────────────────
 
@@ -167,7 +150,6 @@ const COLORS = {
   magenta: "\x1b[35m",
   red: "\x1b[31m",
   blue: "\x1b[34m",
-  white: "\x1b[37m",
   bgBlue: "\x1b[44m",
   bgGreen: "\x1b[42m",
   bgYellow: "\x1b[43m",
@@ -195,11 +177,7 @@ function printStep(parsed) {
         `\n${COLORS.bgMagenta}${COLORS.bright} 🔧 TOOL ${COLORS.reset} ${COLORS.magenta}${parsed.tool_name}${COLORS.reset}`
       );
       if (parsed.tool_args) {
-        const preview =
-          typeof parsed.tool_args === "string"
-            ? parsed.tool_args
-            : JSON.stringify(parsed.tool_args, null, 2);
-        // Truncate long previews
+        const preview = JSON.stringify(parsed.tool_args, null, 2);
         const lines = preview.split("\n");
         if (lines.length > 8) {
           console.log(
@@ -212,7 +190,7 @@ function printStep(parsed) {
       break;
     case "OBSERVE":
       console.log(
-        `${COLORS.blue}   👁 OBSERVE → ${COLORS.reset}${COLORS.dim}${content.substring(0, 200)}${content.length > 200 ? "..." : ""}${COLORS.reset}`
+        `${COLORS.blue}   👁 OBSERVE → ${COLORS.reset}${COLORS.dim}${String(content).substring(0, 200)}${String(content).length > 200 ? "..." : ""}${COLORS.reset}`
       );
       break;
     case "OUTPUT":
@@ -225,10 +203,57 @@ function printStep(parsed) {
   }
 }
 
+// ── JSON extraction ────────────────────────────────────────────────────
+// Mirrors retrofit's extract_json utility — handles clean JSON, arrays,
+// and any stray text that might surround the JSON object.
+
+function extractJson(text) {
+  if (!text) throw new Error("Empty response text");
+
+  // 1. Direct parse (happy path)
+  try {
+    return JSON.parse(text);
+  } catch (_) {}
+
+  // 2. Strip markdown fences
+  const stripped = text.replace(/```(?:json)?\s*/g, "").trim();
+  try {
+    return JSON.parse(stripped);
+  } catch (_) {}
+
+  // 3. Find first complete JSON object or array using brace matching
+  for (const startChar of ["{", "["]) {
+    const startIdx = stripped.indexOf(startChar);
+    if (startIdx === -1) continue;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = startIdx; i < stripped.length; i++) {
+      const ch = stripped[i];
+      if (escape) { escape = false; continue; }
+      if (ch === "\\" && inString) { escape = true; continue; }
+      if (ch === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (ch === "{" || ch === "[") depth++;
+      if (ch === "}" || ch === "]") {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(stripped.slice(startIdx, i + 1));
+          } catch (_) {}
+        }
+      }
+    }
+  }
+
+  throw new Error(`No valid JSON found. First 200 chars: ${text.slice(0, 200)}`);
+}
+
 // ── Agent loop ─────────────────────────────────────────────────────────
 
-async function runAgent(userMessage, messages) {
-  messages.push({ role: "user", content: userMessage });
+async function runAgent(userMessage, contents) {
+  // Append user message using the @google/genai content format
+  contents.push({ role: "user", parts: [{ text: userMessage }] });
 
   let iterations = 0;
   const MAX_ITERATIONS = 30;
@@ -236,41 +261,44 @@ async function runAgent(userMessage, messages) {
   while (iterations < MAX_ITERATIONS) {
     iterations++;
 
-    const response = await client.chat.completions.create({
+    // Call using native SDK — response.text strips thinking tokens automatically.
+    // thinkingLevel "low": agent loop externalizes reasoning via THINK steps,
+    // so we don't need deep per-step internal thinking (mirrors retrofit's Flash usage).
+    // responseMimeType "application/json": forces clean JSON, no markdown wrapping.
+    // Temperature: NOT set — must stay at default 1.0 for Gemini 3 (per models.md).
+    const response = await ai.models.generateContent({
       model: MODEL,
-      messages: messages,
+      contents,
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        thinkingConfig: { thinkingLevel: "low" },
+        responseMimeType: "application/json",
+      },
     });
 
-    const raw = response.choices[0].message.content;
+    const raw = response.text;
     let parsedRaw;
 
     try {
-      parsedRaw = JSON.parse(raw);
-    } catch {
-      // Try to extract first JSON object or array from raw text
-      const match = raw.match(/(\[|\{)[\s\S]*(\]|\})/);
-      if (match) {
-        try {
-          parsedRaw = JSON.parse(match[0]);
-        } catch {
-          console.log(`${COLORS.red}Failed to parse response: ${raw.substring(0, 200)}${COLORS.reset}`);
-          messages.push({ role: "assistant", content: raw });
-          continue;
-        }
-      } else {
-        console.log(`${COLORS.red}No JSON found in response${COLORS.reset}`);
-        messages.push({ role: "assistant", content: raw });
-        continue;
-      }
+      parsedRaw = extractJson(raw);
+    } catch (err) {
+      console.log(`${COLORS.red}Parse error: ${err.message}${COLORS.reset}`);
+      // Push the raw model response back as-is so conversation stays intact
+      contents.push({ role: "model", parts: [{ text: raw }] });
+      continue;
     }
 
-    // Gemini sometimes returns all steps as an array — unwrap and process each
+    // SDK handles thought signatures automatically when we push the full response
+    // parts back. We push normalized JSON string as the model turn.
+    const normalized = JSON.stringify(parsedRaw);
+    contents.push({ role: "model", parts: [{ text: normalized }] });
+
+    // Gemini sometimes batches all steps into an array — unwrap and process each
     const stepQueue = Array.isArray(parsedRaw) ? parsedRaw : [parsedRaw];
 
     for (const parsed of stepQueue) {
       if (!parsed || typeof parsed !== "object" || !parsed.step) continue;
 
-      messages.push({ role: "assistant", content: JSON.stringify(parsed) });
       printStep(parsed);
 
       if (parsed.step === "OUTPUT") {
@@ -283,7 +311,7 @@ async function runAgent(userMessage, messages) {
 
         let result;
         if (!toolDef) {
-          result = `Error: Tool "${toolName}" is not available. Available tools: ${Object.keys(tools).join(", ")}`;
+          result = `Error: Tool "${toolName}" is not available. Available: ${Object.keys(tools).join(", ")}`;
         } else {
           try {
             const args = toolDef.parse(
@@ -303,21 +331,25 @@ async function runAgent(userMessage, messages) {
         };
 
         printStep(observe);
-        messages.push({
+
+        // Inject OBSERVE as the next user turn so the model sees the tool result
+        contents.push({
           role: "user",
-          content: JSON.stringify(observe),
+          parts: [{ text: JSON.stringify(observe) }],
         });
+
+        // Break out of stepQueue — each TOOL must wait for OBSERVE before continuing
+        break;
       }
     }
 
-    // After draining the stepQueue, check if any step was OUTPUT
+    // If any step in the batch was OUTPUT, we already returned above
     if (stepQueue.some((s) => s && s.step === "OUTPUT")) {
       return stepQueue.find((s) => s && s.step === "OUTPUT").content;
     }
-
   }
 
-  console.log(`${COLORS.red}Agent exceeded maximum iterations (${MAX_ITERATIONS}).${COLORS.reset}`);
+  console.log(`${COLORS.red}Agent reached max iterations (${MAX_ITERATIONS}).${COLORS.reset}`);
   return "Agent stopped after maximum iterations.";
 }
 
@@ -334,7 +366,8 @@ ${COLORS.dim}Type your instruction and press Enter. Type "exit" to quit.${COLORS
 ${COLORS.dim}────────────────────────────────────────────────────────────${COLORS.reset}
 `);
 
-  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+  // Contents array persists across turns — conversation memory
+  const contents = [];
 
   const rl = createInterface({
     input: process.stdin,
@@ -352,7 +385,7 @@ ${COLORS.dim}──────────────────────�
       }
 
       try {
-        await runAgent(trimmed, messages);
+        await runAgent(trimmed, contents);
       } catch (err) {
         console.log(`${COLORS.red}Error: ${err.message}${COLORS.reset}`);
       }

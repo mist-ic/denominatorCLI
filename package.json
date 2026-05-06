@@ -8,13 +8,16 @@
     "start": "node index.js",
     "dev": "node index.js"
   },
-  "keywords": ["cli", "agent", "ai", "web-cloning"],
+  "keywords": [
+    "cli",
+    "agent",
+    "ai",
+    "web-cloning"
+  ],
   "author": "Praveen Kumar",
   "license": "MIT",
   "dependencies": {
-    "axios": "^1.7.0",
-    "dotenv": "^16.4.0",
-    "openai": "^4.70.0",
-    "readline": "^1.3.0"
+    "@google/genai": "^1.52.0",
+    "dotenv": "^16.4.0"
   }
 }
