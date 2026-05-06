@@ -2,7 +2,7 @@
 
 A conversational AI agent that runs in your terminal. Give it a natural language instruction and it reasons step-by-step, uses tools, and produces real output files.
 
-**[Live Demo](https://denominator-cli-411746695116.asia-south1.run.app)** | **[YouTube Walkthrough](https://youtu.be/PLACEHOLDER)**
+**[Live Demo](https://denominator-cli-411746695116.asia-south1.run.app)** | **[YouTube Walkthrough](https://youtu.be/IQS8QyPSkj4)**
 
 ---
 
